@@ -1,0 +1,48 @@
+{
+  "manifest_version": 2,
+  "id": "github.kumburovicbranko682-boop.image-relook",
+  "version": "1.0.2",
+  "name": "图片重看",
+  "description": "当首遍图片描述不够时，按当前问题重新调用 VLM 看图。向 planner 暴露 inspect_image 工具，避免图转文信息丢失。",
+  "author": {
+    "name": "kumburovicbranko682-boop",
+    "url": "https://github.com/kumburovicbranko682-boop"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/kumburovicbranko682-boop/maibot-image-relook",
+    "homepage": "https://github.com/kumburovicbranko682-boop/maibot-image-relook",
+    "issues": "https://github.com/kumburovicbranko682-boop/maibot-image-relook/issues"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.5.1",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "message.get_recent",
+    "llm.generate",
+    "database.get",
+    "database.query"
+  ],
+  "keywords": [
+    "image",
+    "vision",
+    "vlm",
+    "inspect",
+    "multimodal",
+    "看图",
+    "识图"
+  ],
+  "categories": [
+    "Utility"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": ["zh-CN"]
+  }
+}

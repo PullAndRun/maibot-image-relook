@@ -1,0 +1,11 @@
+[plugin]
+enabled = true
+config_version = "1.0.2"
+
+[relook]
+lookback_hours = 24.0
+recent_message_limit = 40
+max_images = 10
+llm_task = "vlm"
+temperature = 0.2
+max_tokens = 1024
