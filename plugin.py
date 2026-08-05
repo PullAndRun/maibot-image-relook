@@ -15,7 +15,7 @@ from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 class PluginSection(PluginConfigBase):
     enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="1.0.2", description="配置版本")
+    config_version: str = Field(default="1.0.3", description="配置版本")
 
 
 class RelookSection(PluginConfigBase):
@@ -34,8 +34,79 @@ class ImageRelookConfig(PluginConfigBase):
 
 _DATA_URL_RE = re.compile(r"^data:image/(?P<fmt>[a-zA-Z0-9.+-]+);base64,(?P<data>.+)$", re.DOTALL)
 _PLUGIN_DIR = Path(__file__).resolve().parent
-# plugin.py -> local_image-relook -> plugins -> MaiBot
-_MAIBOT_ROOT = _PLUGIN_DIR.parent.parent
+_IMAGE_EXTS = ("png", "jpeg", "jpg", "webp", "gif", "bmp")
+
+
+def _looks_like_maibot_root(path: Path) -> bool:
+    """用稳定标记判断是否像 MaiBot 根目录。"""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return (resolved / "bot.py").is_file() and (resolved / "data").is_dir()
+
+
+def _discover_maibot_roots(*hints: Path | None) -> list[Path]:
+    """从多个线索发现可用的 MaiBot 根目录，避免写死 plugins/<name> 层级。"""
+    candidates: list[Path] = []
+    for hint in hints:
+        if hint is None:
+            continue
+        try:
+            current = hint.resolve()
+        except OSError:
+            continue
+        # 既可能是文件也可能是目录
+        if current.is_file():
+            current = current.parent
+        for _ in range(8):
+            candidates.append(current)
+            if current.parent == current:
+                break
+            current = current.parent
+
+    # 常见相对布局：插件目录下的 ../../ 或 data/plugins/<id> 的上两级
+    for base in list(candidates):
+        candidates.extend(
+            [
+                base,
+                base.parent,
+                base.parent.parent,
+                base.parent.parent.parent,
+            ]
+        )
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for item in candidates:
+        try:
+            resolved = item.resolve()
+        except OSError:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _looks_like_maibot_root(resolved):
+            roots.append(resolved)
+    return roots
+
+
+def _safe_resolve_under_roots(path: Path, roots: list[Path]) -> Path | None:
+    """resolve 后强制校验路径落在允许的根目录内。"""
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+    except OSError:
+        return None
+    for root in roots:
+        try:
+            root_resolved = root.resolve(strict=False)
+            resolved.relative_to(root_resolved)
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
 
 
 def _unwrap_capability(result: Any) -> Any:
@@ -148,17 +219,51 @@ class ImageRelookPlugin(MaiBotPlugin):
 
     config_model = ImageRelookConfig
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._maibot_roots: list[Path] = []
+
     async def on_load(self) -> None:
-        self.ctx.logger.info("图片重看插件已加载 root=%s", _MAIBOT_ROOT)
+        self._maibot_roots = self._resolve_maibot_roots()
+        self.ctx.logger.info(
+            "图片重看插件已加载 roots=%s",
+            [str(path) for path in self._maibot_roots] or ["<未发现>"],
+        )
 
     async def on_unload(self) -> None:
         self.ctx.logger.info("图片重看插件已卸载")
+        self._maibot_roots = []
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
         del scope, config_data, version
 
+    def _resolve_maibot_roots(self) -> list[Path]:
+        hints: list[Path | None] = [_PLUGIN_DIR]
+        paths = getattr(self.ctx, "paths", None)
+        if paths is not None:
+            hints.append(getattr(paths, "data_dir", None))
+            hints.append(getattr(paths, "runtime_dir", None))
+        roots = _discover_maibot_roots(*hints)
+        if not roots:
+            # 最后兜底：插件目录邻近的候选，即使标记不全也记录警告
+            self.ctx.logger.warning("未能可靠发现 MaiBot 根目录，将仅依赖消息内嵌图片字节")
+        return roots
+
     def _tool_result(self, name: str, content: str) -> dict[str, str]:
         return {"name": name, "content": content}
+
+    def _read_image_file(self, path: Path) -> tuple[str, str] | None:
+        safe = _safe_resolve_under_roots(path, self._maibot_roots)
+        if safe is None:
+            return None
+        try:
+            data = safe.read_bytes()
+        except OSError as exc:
+            self.ctx.logger.warning("读取图片失败 path=%s err=%s", safe, exc)
+            return None
+        if not data:
+            return None
+        return _format_from_path(safe), base64.b64encode(data).decode("ascii")
 
     async def _fetch_recent_messages(self, chat_id: str) -> list[dict[str, Any]]:
         hours = float(self.config.relook.lookback_hours)
@@ -187,17 +292,18 @@ class ImageRelookPlugin(MaiBotPlugin):
         image_hash = str(image_hash or "").strip()
         if not image_hash:
             return None
+        if not self._maibot_roots:
+            self._maibot_roots = self._resolve_maibot_roots()
 
-        # 1) 直接按约定路径找
-        images_dir = _MAIBOT_ROOT / "data" / "images"
-        for ext in ("png", "jpeg", "jpg", "webp", "gif", "bmp"):
-            candidate = images_dir / f"{image_hash}.{ext}"
-            if candidate.is_file():
-                data = candidate.read_bytes()
-                if data:
-                    return _format_from_path(candidate), base64.b64encode(data).decode("ascii")
+        # 1) 在已发现根目录下按约定路径找
+        for root in self._maibot_roots:
+            images_dir = root / "data" / "images"
+            for ext in _IMAGE_EXTS:
+                loaded = self._read_image_file(images_dir / f"{image_hash}.{ext}")
+                if loaded:
+                    return loaded
 
-        # 2) 查数据库拿 full_path
+        # 2) 查数据库拿 full_path，再做根目录前缀校验
         try:
             result = await self.ctx.db.get(
                 model_name="Images",
@@ -231,14 +337,15 @@ class ImageRelookPlugin(MaiBotPlugin):
             if not full_path:
                 continue
             path = Path(full_path)
-            if not path.is_absolute():
-                path = _MAIBOT_ROOT / path
-            if not path.is_file():
+            if path.is_absolute():
+                loaded = self._read_image_file(path)
+                if loaded:
+                    return loaded
                 continue
-            data = path.read_bytes()
-            if not data:
-                continue
-            return _format_from_path(path), base64.b64encode(data).decode("ascii")
+            for root in self._maibot_roots:
+                loaded = self._read_image_file(root / path)
+                if loaded:
+                    return loaded
         return None
 
     async def _resolve_component_image(self, comp: dict[str, Any], message_id: str) -> dict[str, Any] | None:
