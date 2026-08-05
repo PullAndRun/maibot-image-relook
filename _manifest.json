@@ -29,18 +29,6 @@
     "database.get",
     "database.query"
   ],
-  "keywords": [
-    "image",
-    "vision",
-    "vlm",
-    "inspect",
-    "multimodal",
-    "看图",
-    "识图"
-  ],
-  "categories": [
-    "Utility"
-  ],
   "i18n": {
     "default_locale": "zh-CN",
     "supported_locales": ["zh-CN"]
