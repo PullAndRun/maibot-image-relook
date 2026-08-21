@@ -274,7 +274,13 @@ class ImageRelookPlugin(MaiBotPlugin):
             hours=hours,
             limit=limit,
             limit_mode="latest",
-            include_binary_data=True,
+            # Recent-message responses travel through the Runner RPC channel,
+            # whose frame limit is 16 MiB.  Including image bytes here can
+            # easily exceed that limit (especially when several images are in
+            # the lookback window).  Image components still carry their hash;
+            # `_resolve_component_image` loads the bytes locally from
+            # `data/images` or the Images table when needed.
+            include_binary_data=False,
         )
         raw = _unwrap_capability(raw)
         if isinstance(raw, dict):
