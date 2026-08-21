@@ -33,6 +33,7 @@ class ImageRelookConfig(PluginConfigBase):
 
 
 _DATA_URL_RE = re.compile(r"^data:image/(?P<fmt>[a-zA-Z0-9.+-]+);base64,(?P<data>.+)$", re.DOTALL)
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
 _PLUGIN_DIR = Path(__file__).resolve().parent
 _IMAGE_EXTS = ("png", "jpeg", "jpg", "webp", "gif", "bmp")
 
@@ -142,6 +143,23 @@ def _extract_llm_text(result: Any) -> str:
 
 def _parse_image_payload(raw: Any) -> tuple[str, str] | None:
     """解析消息段里的图片为 (format, base64)。没有字节时返回 None。"""
+    def normalize_base64(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        # Message metadata may contain a placeholder or a file path when
+        # binary data was excluded from the RPC response. Never pass such
+        # text to the model as Base64.
+        compact = re.sub(r"\s+", "", value)
+        if not compact or not compact.isascii() or not _BASE64_RE.fullmatch(compact):
+            return None
+        if len(compact) % 4:
+            compact += "=" * (-len(compact) % 4)
+        try:
+            decoded = base64.b64decode(compact, validate=True)
+        except (ValueError, TypeError):
+            return None
+        return compact if decoded else None
+
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -151,15 +169,19 @@ def _parse_image_payload(raw: Any) -> tuple[str, str] | None:
         match = _DATA_URL_RE.match(text)
         if match:
             fmt = match.group("fmt").lower().replace("jpg", "jpeg")
-            return fmt, match.group("data")
-        return "jpeg", text
+            data = normalize_base64(match.group("data"))
+            return (fmt, data) if data else None
+        data = normalize_base64(text)
+        return ("jpeg", data) if data else None
     if not isinstance(raw, dict):
         return None
 
     image_format = str(raw.get("image_format") or raw.get("format") or "").strip().lower()
     image_base64 = raw.get("image_base64") or raw.get("base64")
     if isinstance(image_base64, str) and image_base64.strip():
-        return (image_format or "jpeg").replace("jpg", "jpeg"), image_base64.strip()
+        data = normalize_base64(image_base64)
+        if data:
+            return (image_format or "jpeg").replace("jpg", "jpeg"), data
 
     data = raw.get("data")
     if isinstance(data, str) and data.strip():
